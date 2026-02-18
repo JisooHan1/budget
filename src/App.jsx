@@ -80,6 +80,23 @@ const C = {
   fixedL: "#FFF8EC",
 };
 
+// 결제 정보 프리셋
+const PAY_INSTRUMENTS = ["신용카드", "체크카드", "현금", "계좌이체", "기타"];
+const PAY_METHODS = [
+  "카드",
+  "카카오페이",
+  "네이버페이",
+  "삼성페이",
+  "애플페이",
+  "애플 구독",
+  "구글 구독",
+  "자동이체",
+  "기타",
+];
+
+const monthKeyOf = (y, m) => `${y}-${String(m + 1).padStart(2, "0")}`;
+const daysInMonth = (y, m) => new Date(y, m + 1, 0).getDate();
+
 // ── 로그인 화면 ───────────────────────────────────────────────
 function LoginScreen() {
   const [loading, setLoading] = useState(false);
@@ -240,7 +257,6 @@ export default function App() {
 
 // ── 가계부 본체 ───────────────────────────────────────────────
 function BudgetApp({ user }) {
-  console.log("MY UID:", user.uid);
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth());
@@ -265,8 +281,14 @@ function BudgetApp({ user }) {
     category: "식비",
     amount: "",
     memo: "",
+    payInstrument: "신용카드",
+    payMethod: "카드",
   });
   const [fixedForm, setFixedForm] = useState({ name: "", amount: "", type: "expense" });
+
+  // 일별 탭 뷰(리스트/달력)
+  const [dailyView, setDailyView] = useState("list");
+  const [selectedDate, setSelectedDate] = useState(null);
 
   // ── 데이터 로드 ──────────────────────────────────────────────
   const loadData = async () => {
@@ -318,18 +340,21 @@ function BudgetApp({ user }) {
     setMonth(today.getMonth());
   };
 
-  const monthKey = `${year}-${String(month + 1).padStart(2, "0")}`;
+  const monthKey = monthKeyOf(year, month);
   const monthTx = useMemo(
     () => transactions.filter((t) => (t.date || "").startsWith(monthKey)),
     [transactions, monthKey]
   );
 
   const stats = useMemo(() => {
-    const income = monthTx.filter((t) => t.type === "income").reduce((a, t) => a + Number(t.amount), 0);
-    const expense = monthTx.filter((t) => t.type === "expense").reduce((a, t) => a + Number(t.amount), 0);
+    const txIncome = monthTx.filter((t) => t.type === "income").reduce((a, t) => a + Number(t.amount), 0);
+    const txExpense = monthTx.filter((t) => t.type === "expense").reduce((a, t) => a + Number(t.amount), 0);
     const fixedExp = fixedItems.filter((f) => f.type === "expense").reduce((a, f) => a + Number(f.amount), 0);
     const fixedInc = fixedItems.filter((f) => f.type === "income").reduce((a, f) => a + Number(f.amount), 0);
-    return { income, expense, fixedExp, fixedInc, balance: income - expense };
+    // ✅ 고정항목을 월 합계에 반영
+    const income = txIncome + fixedInc;
+    const expense = txExpense + fixedExp;
+    return { income, expense, fixedExp, fixedInc, balance: income - expense, txIncome, txExpense };
   }, [monthTx, fixedItems]);
 
   const byDay = useMemo(() => {
@@ -340,6 +365,40 @@ function BudgetApp({ user }) {
     });
     return Object.entries(map).sort((a, b) => b[0].localeCompare(a[0]));
   }, [monthTx]);
+
+  // ✅ 달력 비교용(이번달/지난달) 일별 합계 (거래내역 기준; 고정항목은 별도 합산)
+  const dailyTotals = useMemo(() => {
+    const map = {};
+    monthTx.forEach((t) => {
+      if (!map[t.date]) map[t.date] = { income: 0, expense: 0, net: 0 };
+      if (t.type === "income") map[t.date].income += Number(t.amount);
+      else map[t.date].expense += Number(t.amount);
+    });
+    Object.keys(map).forEach((k) => (map[k].net = map[k].income - map[k].expense));
+    return map;
+  }, [monthTx]);
+
+  const prevMonthInfo = useMemo(() => {
+    let py = year,
+      pm = month - 1;
+    if (pm < 0) {
+      pm = 11;
+      py -= 1;
+    }
+    return { py, pm, key: monthKeyOf(py, pm) };
+  }, [year, month]);
+
+  const prevDailyTotals = useMemo(() => {
+    const tx = transactions.filter((t) => (t.date || "").startsWith(prevMonthInfo.key));
+    const map = {};
+    tx.forEach((t) => {
+      if (!map[t.date]) map[t.date] = { income: 0, expense: 0, net: 0 };
+      if (t.type === "income") map[t.date].income += Number(t.amount);
+      else map[t.date].expense += Number(t.amount);
+    });
+    Object.keys(map).forEach((k) => (map[k].net = map[k].income - map[k].expense));
+    return map;
+  }, [transactions, prevMonthInfo.key]);
 
   const catStats = useMemo(() => {
     const map = {};
@@ -353,7 +412,7 @@ function BudgetApp({ user }) {
   // ✅ 월별 비교 데이터 (최근 6개월)
   const monthCompare = useMemo(() => {
     const N = 6;
-    const getKey = (y, m) => `${y}-${String(m + 1).padStart(2, "0")}`;
+    const getKey = (y, m) => monthKeyOf(y, m);
 
     const months = [];
     let y = year,
@@ -369,8 +428,12 @@ function BudgetApp({ user }) {
 
     return months.map(({ y, m, key }) => {
       const tx = transactions.filter((t) => (t.date || "").startsWith(key));
-      const income = tx.filter((t) => t.type === "income").reduce((a, t) => a + Number(t.amount), 0);
-      const expense = tx.filter((t) => t.type === "expense").reduce((a, t) => a + Number(t.amount), 0);
+      const txIncome = tx.filter((t) => t.type === "income").reduce((a, t) => a + Number(t.amount), 0);
+      const txExpense = tx.filter((t) => t.type === "expense").reduce((a, t) => a + Number(t.amount), 0);
+      const fixedExp = fixedItems.filter((f) => f.type === "expense").reduce((a, f) => a + Number(f.amount), 0);
+      const fixedInc = fixedItems.filter((f) => f.type === "income").reduce((a, f) => a + Number(f.amount), 0);
+      const income = txIncome + fixedInc;
+      const expense = txExpense + fixedExp;
       return {
         y,
         m,
@@ -381,7 +444,7 @@ function BudgetApp({ user }) {
         net: income - expense,
       };
     });
-  }, [transactions, year, month]);
+  }, [transactions, fixedItems, year, month]);
 
   // ── 거래 저장/삭제 ───────────────────────────────────────────
   const handleSaveTx = async () => {
@@ -397,6 +460,8 @@ function BudgetApp({ user }) {
         category: form.category,
         amount: Number(form.amount),
         memo: form.memo || "",
+        payInstrument: form.payInstrument || "",
+        payMethod: form.payMethod || "",
       };
       if (editItem) {
         await updateDoc(doc(db, "transactions", editItem.id), payload);
@@ -406,7 +471,15 @@ function BudgetApp({ user }) {
       await loadData();
       setShowForm(false);
       setEditItem(null);
-      setForm({ date: todayStr(), type: "expense", category: "식비", amount: "", memo: "" });
+      setForm({
+        date: todayStr(),
+        type: "expense",
+        category: "식비",
+        amount: "",
+        memo: "",
+        payInstrument: "신용카드",
+        payMethod: "카드",
+      });
       showToast(editItem ? "수정했어요 ✓" : "저장했어요 ✓");
     } catch (e) {
       console.error(e);
@@ -433,6 +506,8 @@ function BudgetApp({ user }) {
       category: item.category,
       amount: String(item.amount),
       memo: item.memo || "",
+      payInstrument: item.payInstrument || "신용카드",
+      payMethod: item.payMethod || "카드",
     });
     setShowForm(true);
   };
@@ -598,7 +673,7 @@ function BudgetApp({ user }) {
 
               {fixedItems.length > 0 && (
                 <div style={{ background: C.fixedL, borderRadius: 16, padding: "14px 18px", marginBottom: 12, border: `1px solid #FCD97A` }}>
-                  <div style={{ fontSize: 12, color: C.fixed, fontWeight: 700, marginBottom: 10 }}>📌 고정항목 합산</div>
+                  <div style={{ fontSize: 12, color: C.fixed, fontWeight: 700, marginBottom: 10 }}>📌 고정항목 (월 합계에 포함)</div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
                     <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                       {stats.fixedInc > 0 && <span style={{ fontSize: 13, color: C.income }}>고정수입 +{fmt(stats.fixedInc)}원</span>}
@@ -703,66 +778,94 @@ function BudgetApp({ user }) {
                 />
               </div>
 
-              {byDay.length === 0 && <Empty text="이번 달 내역이 없어요" emoji="📭" />}
-              {byDay.map(([date, items]) => {
-                const dayIncome = items.filter((t) => t.type === "income").reduce((a, t) => a + Number(t.amount), 0);
-                const dayExpense = items.filter((t) => t.type === "expense").reduce((a, t) => a + Number(t.amount), 0);
-                const d = parseDate(date);
-                const dow = d.getDay();
-                return (
-                  <div key={date} style={{ marginBottom: 16 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, paddingLeft: 2 }}>
-                      <div style={{ fontSize: 13, fontWeight: 700 }}>
-                        {date.slice(5).replace("-", "/")}
-                        <span style={{ fontSize: 12, marginLeft: 5, fontWeight: 600, color: dow === 0 ? C.expense : dow === 6 ? C.blue : C.sub }}>
-                          {DAYS[dow]}
-                        </span>
+              <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                {[
+                  ["list", "리스트"],
+                  ["calendar", "달력비교"],
+                ].map(([k, l]) => (
+                  <button
+                    key={k}
+                    onClick={() => {
+                      setDailyView(k);
+                      if (k === "calendar") setSelectedDate((d) => d || todayStr());
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: "10px 0",
+                      borderRadius: 12,
+                      border: `1px solid ${dailyView === k ? C.accent : C.border}`,
+                      cursor: "pointer",
+                      fontFamily: "inherit",
+                      fontSize: 13,
+                      fontWeight: 800,
+                      background: dailyView === k ? C.accentL : C.card,
+                      color: dailyView === k ? C.accent : C.sub,
+                      boxShadow: dailyView === k ? "0 1px 4px #00000006" : "none",
+                    }}
+                  >
+                    {l}
+                  </button>
+                ))}
+              </div>
+
+              {dailyView === "calendar" ? (
+                <div>
+                  <CalendarCompare
+                    year={year}
+                    month={month}
+                    dailyTotals={dailyTotals}
+                    prevDailyTotals={prevDailyTotals}
+                    prevMonthInfo={prevMonthInfo}
+                    selectedDate={selectedDate}
+                    onSelectDate={setSelectedDate}
+                  />
+
+                  {selectedDate && (
+                    <div style={{ marginTop: 14 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                        <div style={{ fontSize: 13, fontWeight: 800 }}>{selectedDate.slice(5).replace("-", "/")} 내역</div>
+                        <button
+                          onClick={() => {
+                            setEditItem(null);
+                            setForm((f) => ({
+                              ...f,
+                              date: selectedDate,
+                              type: "expense",
+                              category: "식비",
+                              amount: "",
+                              memo: "",
+                              payInstrument: f.payInstrument || "신용카드",
+                              payMethod: f.payMethod || "카드",
+                            }));
+                            setShowForm(true);
+                          }}
+                          style={{
+                            background: C.accentL,
+                            border: `1px solid ${C.accent}`,
+                            color: C.accent,
+                            borderRadius: 10,
+                            padding: "6px 10px",
+                            fontSize: 12,
+                            fontWeight: 800,
+                            cursor: "pointer",
+                            fontFamily: "inherit",
+                          }}
+                        >
+                          + 이 날 추가
+                        </button>
                       </div>
-                      <div style={{ fontSize: 12, color: C.sub, display: "flex", gap: 8 }}>
-                        {dayIncome > 0 && <span style={{ color: C.income }}>+{fmt(dayIncome)}</span>}
-                        {dayExpense > 0 && <span style={{ color: C.expense }}>-{fmt(dayExpense)}</span>}
-                      </div>
+                      <DayList date={selectedDate} items={monthTx.filter((t) => t.date === selectedDate)} openEdit={openEdit} onDelete={handleDeleteTx} />
                     </div>
-                    <div style={{ background: C.card, borderRadius: 14, overflow: "hidden", border: `1px solid ${C.border}`, boxShadow: "0 1px 4px #00000006" }}>
-                      {items.map((t, i) => (
-                        <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderTop: i > 0 ? `1px solid ${C.border}` : "none" }}>
-                          <div
-                            style={{
-                              width: 36,
-                              height: 36,
-                              borderRadius: 10,
-                              background: t.type === "income" ? C.incomeL : C.expenseL,
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              fontSize: 18,
-                              flexShrink: 0,
-                            }}
-                          >
-                            {CAT_ICONS[t.category] || "💳"}
-                          </div>
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontSize: 13, fontWeight: 600 }}>{t.category}</div>
-                            {t.memo && (
-                              <div style={{ fontSize: 11, color: C.sub, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                {t.memo}
-                              </div>
-                            )}
-                          </div>
-                          <div style={{ fontSize: 14, fontWeight: 700, color: t.type === "income" ? C.income : C.expense, whiteSpace: "nowrap" }}>
-                            {t.type === "income" ? "+" : "-"}
-                            {fmt(t.amount)}원
-                          </div>
-                          <div style={{ display: "flex", gap: 2 }}>
-                            <IBtn onClick={() => openEdit(t)} e="✏️" />
-                            <IBtn onClick={() => handleDeleteTx(t.id)} e="🗑️" />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                );
-              })}
+                  )}
+                </div>
+              ) : (
+                <div>
+                  {byDay.length === 0 && <Empty text="이번 달 내역이 없어요" emoji="📭" />}
+                  {byDay.map(([date, items]) => (
+                    <DaySection key={date} date={date} items={items} openEdit={openEdit} onDelete={handleDeleteTx} />
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -881,7 +984,15 @@ function BudgetApp({ user }) {
         <button
           onClick={() => {
             setEditItem(null);
-            setForm({ date: todayStr(), type: "expense", category: "식비", amount: "", memo: "" });
+            setForm({
+              date: todayStr(),
+              type: "expense",
+              category: "식비",
+              amount: "",
+              memo: "",
+              payInstrument: "신용카드",
+              payMethod: "카드",
+            });
             setShowForm(true);
           }}
           style={{
@@ -1039,6 +1150,25 @@ function BudgetApp({ user }) {
             placeholder="0"
             inputMode="numeric"
           />
+
+          <Lbl>결제수단</Lbl>
+          <Sel value={form.payInstrument} onChange={(e) => setForm((f) => ({ ...f, payInstrument: e.target.value }))}>
+            {PAY_INSTRUMENTS.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </Sel>
+
+          <Lbl>결제방법</Lbl>
+          <Sel value={form.payMethod} onChange={(e) => setForm((f) => ({ ...f, payMethod: e.target.value }))}>
+            {PAY_METHODS.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </Sel>
+
           <Lbl>메모 (선택)</Lbl>
           <Inp
             type="text"
@@ -1146,6 +1276,162 @@ function MiniCard({ label, value, color, bg, sign }) {
     </div>
   );
 }
+
+function DaySection({ date, items, openEdit, onDelete }) {
+  const dayIncome = items.filter((t) => t.type === "income").reduce((a, t) => a + Number(t.amount), 0);
+  const dayExpense = items.filter((t) => t.type === "expense").reduce((a, t) => a + Number(t.amount), 0);
+  const d = parseDate(date);
+  const dow = d.getDay();
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6, paddingLeft: 2 }}>
+        <div style={{ fontSize: 13, fontWeight: 700 }}>
+          {date.slice(5).replace("-", "/")}
+          <span style={{ fontSize: 12, marginLeft: 5, fontWeight: 600, color: dow === 0 ? C.expense : dow === 6 ? C.blue : C.sub }}>
+            {DAYS[dow]}
+          </span>
+        </div>
+        <div style={{ fontSize: 12, color: C.sub, display: "flex", gap: 8 }}>
+          {dayIncome > 0 && <span style={{ color: C.income }}>+{fmt(dayIncome)}</span>}
+          {dayExpense > 0 && <span style={{ color: C.expense }}>-{fmt(dayExpense)}</span>}
+        </div>
+      </div>
+      <DayList date={date} items={items} openEdit={openEdit} onDelete={onDelete} />
+    </div>
+  );
+}
+
+function DayList({ date, items, openEdit, onDelete }) {
+  if (!items || items.length === 0) {
+    return (
+      <div style={{ background: C.card, borderRadius: 14, border: `1px dashed ${C.border}`, padding: "14px", color: C.sub, fontSize: 13, textAlign: "center" }}>
+        이 날 내역이 없어요
+      </div>
+    );
+  }
+  return (
+    <div style={{ background: C.card, borderRadius: 14, overflow: "hidden", border: `1px solid ${C.border}`, boxShadow: "0 1px 4px #00000006" }}>
+      {items.map((t, i) => (
+        <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 14px", borderTop: i > 0 ? `1px solid ${C.border}` : "none" }}>
+          <div
+            style={{
+              width: 36,
+              height: 36,
+              borderRadius: 10,
+              background: t.type === "income" ? C.incomeL : C.expenseL,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 18,
+              flexShrink: 0,
+            }}
+          >
+            {CAT_ICONS[t.category] || "💳"}
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>{t.category}</div>
+            {t.memo && <div style={{ fontSize: 11, color: C.sub, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.memo}</div>}
+            {(t.payInstrument || t.payMethod) && (
+              <div style={{ fontSize: 11, color: C.sub, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {t.payInstrument ? `💳 ${t.payInstrument}` : ""}
+                {t.payInstrument && t.payMethod ? " · " : ""}
+                {t.payMethod ? `⚡ ${t.payMethod}` : ""}
+              </div>
+            )}
+          </div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: t.type === "income" ? C.income : C.expense, whiteSpace: "nowrap" }}>
+            {t.type === "income" ? "+" : "-"}
+            {fmt(t.amount)}원
+          </div>
+          <div style={{ display: "flex", gap: 2 }}>
+            <IBtn onClick={() => openEdit(t)} e="✏️" />
+            <IBtn onClick={() => onDelete(t.id)} e="🗑️" />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function CalendarCompare({ year, month, dailyTotals, prevDailyTotals, prevMonthInfo, selectedDate, onSelectDate }) {
+  const totalDays = daysInMonth(year, month);
+  const startDow = new Date(year, month, 1).getDay();
+  const cells = [];
+  for (let i = 0; i < startDow; i++) cells.push(null);
+  for (let d = 1; d <= totalDays; d++) cells.push(d);
+
+  const mm = String(month + 1).padStart(2, "0");
+  const prevTotalDays = daysInMonth(prevMonthInfo.py, prevMonthInfo.pm);
+
+  const isToday = (dateStr) => dateStr === todayStr();
+
+  return (
+    <div style={{ background: C.card, borderRadius: 16, padding: "14px 14px 12px", border: `1px solid ${C.border}`, boxShadow: "0 1px 4px #00000006" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+        <div style={{ fontSize: 13, fontWeight: 800 }}>이번달 vs 지난달(같은 날짜)</div>
+        <div style={{ fontSize: 11, color: C.sub }}>표시: 지출</div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, marginBottom: 8 }}>
+        {DAYS.map((d, i) => (
+          <div key={d} style={{ fontSize: 11, color: i === 0 ? C.expense : i === 6 ? C.blue : C.sub, fontWeight: 800, textAlign: "center" }}>
+            {d}
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6 }}>
+        {cells.map((d, idx) => {
+          if (!d) return <div key={`e-${idx}`} />;
+          const dd = String(d).padStart(2, "0");
+          const dateStr = `${year}-${mm}-${dd}`;
+          const cur = dailyTotals[dateStr];
+
+          let prevExpense = 0;
+          if (d <= prevTotalDays) {
+            const pmm = String(prevMonthInfo.pm + 1).padStart(2, "0");
+            const prevDateStr = `${prevMonthInfo.py}-${pmm}-${dd}`;
+            prevExpense = prevDailyTotals[prevDateStr]?.expense || 0;
+          }
+
+          const expense = cur?.expense || 0;
+          const hasData = expense > 0 || (cur?.income || 0) > 0;
+          const isSel = selectedDate === dateStr;
+
+          return (
+            <button
+              key={dateStr}
+              onClick={() => onSelectDate(dateStr)}
+              style={{
+                border: `1px solid ${isSel ? C.accent : C.border}`,
+                background: isSel ? C.accentL : C.bg,
+                borderRadius: 12,
+                padding: "10px 8px",
+                cursor: "pointer",
+                fontFamily: "inherit",
+                textAlign: "left",
+                minHeight: 64,
+                position: "relative",
+                opacity: d ? 1 : 0,
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 900, color: isToday(dateStr) ? C.accent : C.text }}>{d}</span>
+                {hasData && <span style={{ fontSize: 10, color: C.sub, fontWeight: 800 }}>•</span>}
+              </div>
+              <div style={{ fontSize: 11, fontWeight: 800, color: expense > 0 ? C.expense : C.sub, lineHeight: 1.15 }}>
+                {expense > 0 ? `-${fmt(expense)}` : "-"}
+              </div>
+              <div style={{ fontSize: 10, color: C.sub, marginTop: 3, lineHeight: 1.1 }}>
+                {prevExpense > 0 ? `지난달 -${fmt(prevExpense)}` : ""}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
 function Empty({ text, emoji }) {
   return (
     <div style={{ textAlign: "center", color: C.sub, marginTop: 60, fontSize: 15 }}>
@@ -1215,6 +1501,27 @@ function Inp(props) {
         fontFamily: "'Noto Sans KR',sans-serif",
         marginBottom: 14,
         outline: "none",
+      }}
+    />
+  );
+}
+
+function Sel(props) {
+  return (
+    <select
+      {...props}
+      style={{
+        width: "100%",
+        background: C.bg,
+        border: `1px solid ${C.border}`,
+        borderRadius: 10,
+        padding: "12px 14px",
+        color: C.text,
+        fontSize: 15,
+        fontFamily: "'Noto Sans KR',sans-serif",
+        marginBottom: 14,
+        outline: "none",
+        appearance: "none",
       }}
     />
   );
