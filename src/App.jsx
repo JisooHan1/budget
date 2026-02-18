@@ -97,6 +97,19 @@ const PAY_METHODS = [
 const monthKeyOf = (y, m) => `${y}-${String(m + 1).padStart(2, "0")}`;
 const daysInMonth = (y, m) => new Date(y, m + 1, 0).getDate();
 
+
+// monthKey(YYYY-MM) 비교용 유틸
+const prevMonthKeyFrom = (y, m) => {
+  let py = y, pm = m - 1;
+  if (pm < 0) { pm = 11; py -= 1; }
+  return monthKeyOf(py, pm);
+};
+const isMonthKeyLE = (a, b) => (a || "0000-01") <= (b || "9999-12");
+const isFixedActiveFor = (fixed, key) => {
+  const from = fixed.effectiveFrom || "0000-01";
+  const to = fixed.effectiveTo || null;
+  return isMonthKeyLE(from, key) && (to === null || isMonthKeyLE(key, to));
+};
 // ── 로그인 화면 ───────────────────────────────────────────────
 function LoginScreen() {
   const [loading, setLoading] = useState(false);
@@ -284,7 +297,7 @@ function BudgetApp({ user }) {
     payInstrument: "신용카드",
     payMethod: "카드",
   });
-  const [fixedForm, setFixedForm] = useState({ name: "", amount: "", type: "expense" });
+  const [fixedForm, setFixedForm] = useState({ name: "", amount: "", type: "expense", memo: "", payInstrument: "", payMethod: "" });
 
   // 일별 탭 뷰(리스트/달력)
   const [dailyView, setDailyView] = useState("list");
@@ -346,16 +359,18 @@ function BudgetApp({ user }) {
     [transactions, monthKey]
   );
 
+  const activeFixedItems = useMemo(() => fixedItems.filter((f) => isFixedActiveFor(f, monthKey)), [fixedItems, monthKey]);
+
   const stats = useMemo(() => {
     const txIncome = monthTx.filter((t) => t.type === "income").reduce((a, t) => a + Number(t.amount), 0);
     const txExpense = monthTx.filter((t) => t.type === "expense").reduce((a, t) => a + Number(t.amount), 0);
-    const fixedExp = fixedItems.filter((f) => f.type === "expense").reduce((a, f) => a + Number(f.amount), 0);
-    const fixedInc = fixedItems.filter((f) => f.type === "income").reduce((a, f) => a + Number(f.amount), 0);
+    const fixedExp = activeFixedItems.filter((f) => f.type === "expense").reduce((a, f) => a + Number(f.amount), 0);
+    const fixedInc = activeFixedItems.filter((f) => f.type === "income").reduce((a, f) => a + Number(f.amount), 0);
     // ✅ 고정항목을 월 합계에 반영
     const income = txIncome + fixedInc;
     const expense = txExpense + fixedExp;
     return { income, expense, fixedExp, fixedInc, balance: income - expense, txIncome, txExpense };
-  }, [monthTx, fixedItems]);
+  }, [monthTx, activeFixedItems]);
 
   const byDay = useMemo(() => {
     const map = {};
@@ -426,12 +441,13 @@ function BudgetApp({ user }) {
       }
     }
 
+    const fixedSumForMonth = (key, type) => fixedItems.filter((f) => f.type === type && isFixedActiveFor(f, key)).reduce((a, f) => a + Number(f.amount), 0);
+
     return months.map(({ y, m, key }) => {
       const tx = transactions.filter((t) => (t.date || "").startsWith(key));
       const txIncome = tx.filter((t) => t.type === "income").reduce((a, t) => a + Number(t.amount), 0);
-      const txExpense = tx.filter((t) => t.type === "expense").reduce((a, t) => a + Number(t.amount), 0);
-      const fixedExp = fixedItems.filter((f) => f.type === "expense").reduce((a, f) => a + Number(f.amount), 0);
-      const fixedInc = fixedItems.filter((f) => f.type === "income").reduce((a, f) => a + Number(f.amount), 0);
+      const txExpense = tx.filter((t) => t.type === "expense").reduce((a, t) => a + Number(t.amount), 0);      const fixedExp = fixedSumForMonth(key, "expense");
+      const fixedInc = fixedSumForMonth(key, "income");
       const income = txIncome + fixedInc;
       const expense = txExpense + fixedExp;
       return {
@@ -518,17 +534,55 @@ function BudgetApp({ user }) {
       showToast("항목명과 금액을 입력해주세요", false);
       return;
     }
+
+    // ✅ 고정항목은 '현재 선택된 월'부터 적용되도록 버전관리 (과거 월 자동 변경 방지)
+    const effectiveFrom = monthKey; // YYYY-MM
+    const effectiveToForOld = prevMonthKeyFrom(year, month);
+
     try {
-      const payload = { uid: user.uid, name: fixedForm.name, amount: Number(fixedForm.amount), type: fixedForm.type };
+      const payloadBase = {
+        uid: user.uid,
+        name: fixedForm.name.trim(),
+        amount: Number(fixedForm.amount),
+        type: fixedForm.type,
+        memo: fixedForm.memo || "",
+        payInstrument: fixedForm.payInstrument || "",
+        payMethod: fixedForm.payMethod || "",
+      };
+
       if (editFixed) {
-        await updateDoc(doc(db, "fixed_items", editFixed.id), payload);
+        const oldFrom = editFixed.effectiveFrom || "0000-01";
+
+        // 같은 적용월(effectiveFrom) 안에서 수정하는 건 과거에 영향 없음 → update
+        if (oldFrom === effectiveFrom) {
+          await updateDoc(doc(db, "fixed_items", editFixed.id), {
+            ...payloadBase,
+            effectiveFrom: oldFrom,
+            effectiveTo: editFixed.effectiveTo ?? null,
+          });
+        } else {
+          // 과거에 이미 적용된 항목이면: 기존 항목을 전월까지로 닫고, 새 버전을 추가
+          await updateDoc(doc(db, "fixed_items", editFixed.id), {
+            effectiveTo: effectiveToForOld,
+          });
+          await addDoc(collection(db, "fixed_items"), {
+            ...payloadBase,
+            effectiveFrom,
+            effectiveTo: null,
+          });
+        }
       } else {
-        await addDoc(collection(db, "fixed_items"), payload);
+        await addDoc(collection(db, "fixed_items"), {
+          ...payloadBase,
+          effectiveFrom,
+          effectiveTo: null,
+        });
       }
+
       await loadData();
       setShowFixedForm(false);
       setEditFixed(null);
-      setFixedForm({ name: "", amount: "", type: "expense" });
+      setFixedForm({ name: "", amount: "", type: "expense", memo: "", payInstrument: "", payMethod: "" });
       showToast(editFixed ? "수정했어요 ✓" : "저장했어요 ✓");
     } catch (e) {
       console.error(e);
@@ -536,10 +590,17 @@ function BudgetApp({ user }) {
     }
   };
 
-  const handleDeleteFixed = async (id) => {
+  // ✅ 삭제도 과거 반영을 막기 위해: 과거에 적용된 항목은 '전월까지'로 종료 처리
+  const handleDeleteFixed = async (item) => {
     try {
-      await deleteDoc(doc(db, "fixed_items", id));
-      setFixedItems((prev) => prev.filter((f) => f.id !== id));
+      const effectiveFrom = item.effectiveFrom || "0000-01";
+      if (effectiveFrom === monthKey) {
+        await deleteDoc(doc(db, "fixed_items", item.id));
+        setFixedItems((prev) => prev.filter((f) => f.id !== item.id));
+      } else {
+        await updateDoc(doc(db, "fixed_items", item.id), { effectiveTo: prevMonthKeyFrom(year, month) });
+        setFixedItems((prev) => prev.map((f) => (f.id === item.id ? { ...f, effectiveTo: prevMonthKeyFrom(year, month) } : f)));
+      }
       showToast("삭제했어요");
     } catch (e) {
       console.error(e);
@@ -671,7 +732,7 @@ function BudgetApp({ user }) {
                 </div>
               </div>
 
-              {fixedItems.length > 0 && (
+              {activeFixedItems.length > 0 && (
                 <div style={{ background: C.fixedL, borderRadius: 16, padding: "14px 18px", marginBottom: 12, border: `1px solid #FCD97A` }}>
                   <div style={{ fontSize: 12, color: C.fixed, fontWeight: 700, marginBottom: 10 }}>📌 고정항목 (월 합계에 포함)</div>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
@@ -871,7 +932,7 @@ function BudgetApp({ user }) {
 
           {tab === "fixed" && (
             <div>
-              {fixedItems.length > 0 && (
+              {activeFixedItems.length > 0 && (
                 <div style={{ background: C.card, borderRadius: 16, padding: "16px 18px", marginBottom: 14, border: `1px solid ${C.border}`, boxShadow: "0 1px 4px #00000006" }}>
                   <div style={{ fontSize: 12, color: C.sub, fontWeight: 600, marginBottom: 10 }}>월 고정 합산</div>
                   <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
@@ -903,7 +964,7 @@ function BudgetApp({ user }) {
                 <button
                   onClick={() => {
                     setEditFixed(null);
-                    setFixedForm({ name: "", amount: "", type: "expense" });
+                    setFixedForm({ name: "", amount: "", type: "expense", memo: "", payInstrument: "", payMethod: "" });
                     setShowFixedForm(true);
                   }}
                   style={{
@@ -922,9 +983,9 @@ function BudgetApp({ user }) {
                 </button>
               </div>
 
-              {fixedItems.length === 0 && <Empty text="고정 항목이 없어요" emoji="📌" />}
+              {activeFixedItems.length === 0 && <Empty text="고정 항목이 없어요" emoji="📌" />}
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {fixedItems.map((f) => (
+                {activeFixedItems.map((f) => (
                   <div
                     key={f.id}
                     style={{
@@ -955,7 +1016,15 @@ function BudgetApp({ user }) {
                     </div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 14, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</div>
-                      <div style={{ fontSize: 11, color: C.sub }}>{f.type === "income" ? "고정수입" : "고정지출"}</div>
+                      <div style={{ fontSize: 11, color: C.sub }}>
+                        {f.type === "income" ? "고정수입" : "고정지출"}
+                        {(f.payInstrument || f.payMethod || f.memo) && (
+                          <span style={{ marginLeft: 6 }}>
+                            • {[(f.payInstrument || "").trim(), (f.payMethod || "").trim()].filter(Boolean).join(" / ")}
+                            {f.memo ? ` • ${f.memo}` : ""}
+                          </span>
+                        )}
+                      </div>
                     </div>
                     <div style={{ fontSize: 15, fontWeight: 700, color: f.type === "income" ? C.income : C.expense, whiteSpace: "nowrap" }}>
                       {f.type === "income" ? "+" : "-"}
@@ -965,12 +1034,12 @@ function BudgetApp({ user }) {
                       <IBtn
                         onClick={() => {
                           setEditFixed(f);
-                          setFixedForm({ name: f.name, amount: String(f.amount), type: f.type });
+                          setFixedForm({ name: f.name, amount: String(f.amount), type: f.type, memo: f.memo || "", payInstrument: f.payInstrument || "", payMethod: f.payMethod || "" });
                           setShowFixedForm(true);
                         }}
                         e="✏️"
                       />
-                      <IBtn onClick={() => handleDeleteFixed(f.id)} e="🗑️" />
+                      <IBtn onClick={() => handleDeleteFixed(f)} e="🗑️" />
                     </div>
                   </div>
                 ))}
@@ -1152,22 +1221,32 @@ function BudgetApp({ user }) {
           />
 
           <Lbl>결제수단</Lbl>
-          <Sel value={form.payInstrument} onChange={(e) => setForm((f) => ({ ...f, payInstrument: e.target.value }))}>
+          <Inp
+            type="text"
+            list="payInstrumentList"
+            value={form.payInstrument}
+            onChange={(e) => setForm((f) => ({ ...f, payInstrument: e.target.value }))}
+            placeholder="예) 신용카드, 현금, 계좌이체..."
+          />
+          <datalist id="payInstrumentList">
             {PAY_INSTRUMENTS.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
+              <option key={p} value={p} />
             ))}
-          </Sel>
+          </datalist>
 
           <Lbl>결제방법</Lbl>
-          <Sel value={form.payMethod} onChange={(e) => setForm((f) => ({ ...f, payMethod: e.target.value }))}>
+          <Inp
+            type="text"
+            list="payMethodList"
+            value={form.payMethod}
+            onChange={(e) => setForm((f) => ({ ...f, payMethod: e.target.value }))}
+            placeholder="예) 카드, 카카오페이, 애플 구독..."
+          />
+          <datalist id="payMethodList">
             {PAY_METHODS.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
+              <option key={p} value={p} />
             ))}
-          </Sel>
+          </datalist>
 
           <Lbl>메모 (선택)</Lbl>
           <Inp
@@ -1227,6 +1306,42 @@ function BudgetApp({ user }) {
             placeholder="0"
             inputMode="numeric"
           />
+          <Lbl>결제수단</Lbl>
+          <Inp
+            type="text"
+            list="fixedPayInstrumentList"
+            value={fixedForm.payInstrument}
+            onChange={(e) => setFixedForm((f) => ({ ...f, payInstrument: e.target.value }))}
+            placeholder="예) 계좌이체, 신용카드..."
+          />
+          <datalist id="fixedPayInstrumentList">
+            {PAY_INSTRUMENTS.map((p) => (
+              <option key={p} value={p} />
+            ))}
+          </datalist>
+
+          <Lbl>결제방법</Lbl>
+          <Inp
+            type="text"
+            list="fixedPayMethodList"
+            value={fixedForm.payMethod}
+            onChange={(e) => setFixedForm((f) => ({ ...f, payMethod: e.target.value }))}
+            placeholder="예) 자동이체, 애플 구독..."
+          />
+          <datalist id="fixedPayMethodList">
+            {PAY_METHODS.map((p) => (
+              <option key={p} value={p} />
+            ))}
+          </datalist>
+
+          <Lbl>메모 (선택)</Lbl>
+          <Inp
+            type="text"
+            value={fixedForm.memo}
+            onChange={(e) => setFixedForm((f) => ({ ...f, memo: e.target.value }))}
+            placeholder="간단한 메모..."
+          />
+
           <SBtn onClick={handleSaveFixed}>{editFixed ? "수정하기" : "저장하기"}</SBtn>
         </Modal>
       )}
