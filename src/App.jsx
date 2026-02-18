@@ -240,6 +240,7 @@ export default function App() {
 
 // ── 가계부 본체 ───────────────────────────────────────────────
 function BudgetApp({ user }) {
+  console.log("MY UID:", user.uid);
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth());
