@@ -11,6 +11,7 @@ import {
   deleteDoc,
   doc,
   orderBy,
+  writeBatch,
 } from "firebase/firestore";
 
 // ── 유틸 ──────────────────────────────────────────────────────
@@ -286,6 +287,7 @@ function BudgetApp({ user }) {
   const [showFixedForm, setShowFixedForm] = useState(false);
   const [editFixed, setEditFixed] = useState(null);
   const [showMonthPick, setShowMonthPick] = useState(false);
+  const [manageMonthKey, setManageMonthKey] = useState(() => monthKeyOf(today.getFullYear(), today.getMonth()));
   const [toast, setToast] = useState(null);
 
   const [form, setForm] = useState({
@@ -351,6 +353,79 @@ function BudgetApp({ user }) {
   const goToday = () => {
     setYear(today.getFullYear());
     setMonth(today.getMonth());
+  };
+
+  // ── 데이터 관리: 월 초기화/전체 초기화 ─────────────────────────
+  const resetTransactionsByMonthKey = async (mk) => {
+    try {
+      const [yStr, mStr] = (mk || "").split("-");
+      const y = Number(yStr);
+      const m = Number(mStr) - 1;
+      if (!yStr || !mStr || Number.isNaN(y) || Number.isNaN(m)) {
+        showToast("월 형식이 올바르지 않아요", false);
+        return;
+      }
+      const start = `${yStr}-${mStr}-01`;
+      const end = `${yStr}-${mStr}-${String(daysInMonth(y, m)).padStart(2, "0")}`;
+      const ok = window.confirm(
+        `${yStr}년 ${Number(mStr)}월의 거래 내역을 전부 초기화할까요?\n(고정항목은 삭제되지 않아요)`
+      );
+      if (!ok) return;
+
+      const qy = query(
+        collection(db, "transactions"),
+        where("userId", "==", user.uid),
+        where("date", ">=", start),
+        where("date", "<=", end),
+        orderBy("date", "asc")
+      );
+      const snap = await getDocs(qy);
+      if (snap.empty) {
+        showToast("초기화할 거래가 없어요");
+        return;
+      }
+
+      // Firestore batch limit(500) 고려하여 청크 처리
+      const docs = snap.docs;
+      for (let i = 0; i < docs.length; i += 450) {
+        const batch = writeBatch(db);
+        docs.slice(i, i + 450).forEach((d) => batch.delete(d.ref));
+        await batch.commit();
+      }
+
+      // 로컬 상태에서도 제거
+      setTransactions((prev) => prev.filter((t) => t.userId !== user.uid || t.date < start || t.date > end));
+      showToast("해당 월을 초기화했어요 ✓");
+    } catch (e) {
+      console.error(e);
+      showToast("초기화에 실패했어요", false);
+    }
+  };
+
+  const resetAllTransactions = async () => {
+    const ok1 = window.confirm("모든 거래 내역을 전부 초기화할까요?\n(되돌릴 수 없어요)");
+    if (!ok1) return;
+    const ok2 = window.confirm("정말로 전부 삭제할까요?\n(고정항목은 삭제되지 않아요)");
+    if (!ok2) return;
+    try {
+      const qy = query(collection(db, "transactions"), where("userId", "==", user.uid), orderBy("date", "asc"));
+      const snap = await getDocs(qy);
+      if (snap.empty) {
+        showToast("초기화할 거래가 없어요");
+        return;
+      }
+      const docs = snap.docs;
+      for (let i = 0; i < docs.length; i += 450) {
+        const batch = writeBatch(db);
+        docs.slice(i, i + 450).forEach((d) => batch.delete(d.ref));
+        await batch.commit();
+      }
+      setTransactions((prev) => prev.filter((t) => t.userId !== user.uid));
+      showToast("모든 거래를 초기화했어요 ✓");
+    } catch (e) {
+      console.error(e);
+      showToast("초기화에 실패했어요", false);
+    }
   };
 
   const monthKey = monthKeyOf(year, month);
@@ -632,31 +707,40 @@ function BudgetApp({ user }) {
     >
       <header style={{ position: "sticky", top: 0, zIndex: 50, background: C.card, borderBottom: `1px solid ${C.border}` }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "13px 16px 10px" }}>
-          <button onClick={goPrev} style={navBtn}>
-            ‹
-          </button>
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
-            <button
-              onClick={() => setShowMonthPick(true)}
-              style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 4 }}
-            >
-              <span style={{ fontSize: 19, fontWeight: 700, color: C.text }}>
-                {year}년 {MONTHS[month]}
-              </span>
-              <span style={{ fontSize: 12, color: C.sub }}>▾</span>
+          <div style={{ width: 36 }} />
+
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <button onClick={goPrev} style={navBtn} title="이전 달">
+              ‹
             </button>
-            {!isCurrentMonth && (
+
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
               <button
-                onClick={goToday}
-                style={{ background: C.accentL, border: "none", borderRadius: 20, padding: "2px 10px", fontSize: 11, color: C.accent, cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}
+                onClick={() => setShowMonthPick(true)}
+                style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 4 }}
               >
-                오늘로
+                <span style={{ fontSize: 19, fontWeight: 700, color: C.text }}>
+                  {year}년 {MONTHS[month]}
+                </span>
+                <span style={{ fontSize: 12, color: C.sub }}>▾</span>
               </button>
-            )}
+              {!isCurrentMonth && (
+                <button
+                  onClick={goToday}
+                  style={{ background: C.accentL, border: "none", borderRadius: 20, padding: "2px 10px", fontSize: 11, color: C.accent, cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}
+                >
+                  오늘로
+                </button>
+              )}
+            </div>
+
+            <button onClick={goNext} style={navBtn} title="다음 달">
+              ›
+            </button>
           </div>
           <button
             onClick={handleLogout}
-            title="로그아웃"
+            title="홈(로그아웃)"
             style={{
               background: C.bg,
               border: `1px solid ${C.border}`,
@@ -671,7 +755,7 @@ function BudgetApp({ user }) {
               justifyContent: "center",
             }}
           >
-            ↩
+            🏠
           </button>
         </div>
 
@@ -750,6 +834,71 @@ function BudgetApp({ user }) {
                   </div>
                 </div>
               )}
+
+              {/* 데이터 관리 */}
+              <div style={{ background: C.card, borderRadius: 18, padding: "18px 18px", marginBottom: 12, border: `1px solid ${C.border}`, boxShadow: "0 1px 6px #00000008" }}>
+                <div style={{ fontSize: 14, fontWeight: 800, marginBottom: 10 }}>🧹 데이터 관리</div>
+                <div style={{ fontSize: 12, color: C.sub, marginBottom: 12, lineHeight: 1.5 }}>
+                  원하는 달의 <b>거래 내역</b>을 초기화할 수 있어요. 고정항목은 삭제되지 않아요.
+                </div>
+
+                <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ fontSize: 12, color: C.sub, fontWeight: 700 }}>초기화할 달</div>
+                    <input
+                      type="month"
+                      value={manageMonthKey}
+                      onChange={(e) => setManageMonthKey(e.target.value)}
+                      style={{
+                        padding: "10px 12px",
+                        borderRadius: 12,
+                        border: `1px solid ${C.border}`,
+                        fontFamily: "inherit",
+                        fontSize: 14,
+                        background: "#fff",
+                        minWidth: 160,
+                      }}
+                    />
+                  </div>
+
+                  <div style={{ display: "flex", gap: 10, marginLeft: "auto" }}>
+                    <button
+                      onClick={() => resetTransactionsByMonthKey(manageMonthKey)}
+                      style={{
+                        background: C.expenseL,
+                        border: `1px solid #FBBFBF`,
+                        color: C.expense,
+                        padding: "10px 12px",
+                        borderRadius: 12,
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                        fontWeight: 800,
+                        fontSize: 13,
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      선택 달 초기화
+                    </button>
+                    <button
+                      onClick={resetAllTransactions}
+                      style={{
+                        background: "#fff",
+                        border: `1px solid ${C.border}`,
+                        color: C.sub,
+                        padding: "10px 12px",
+                        borderRadius: 12,
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                        fontWeight: 800,
+                        fontSize: 13,
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      전체 거래 초기화
+                    </button>
+                  </div>
+                </div>
+              </div>
 
               {catStats.length > 0 ? (
                 <div style={{ background: C.card, borderRadius: 16, padding: "16px", border: `1px solid ${C.border}`, boxShadow: "0 1px 6px #00000008" }}>
