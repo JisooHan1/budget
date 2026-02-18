@@ -64,22 +64,25 @@ const CAT_ICONS = {
 };
 
 const C = {
-  bg: "#F5F6F8",
+  // Toss/Obsidian-ish: clean, airy, high contrast
+  bg: "#F7F8FA",
   card: "#FFFFFF",
-  border: "#EAECF0",
-  text: "#18191B",
-  sub: "#8B939E",
-  income: "#00A36C",
-  incomeL: "#EDFAF5",
-  expense: "#E84040",
-  expenseL: "#FEF0F0",
+  border: "#E5E7EB",
+  text: "#111827",
+  sub: "#6B7280",
+  income: "#10B981",
+  incomeL: "#E9FBF5",
+  expense: "#EF4444",
+  expenseL: "#FEECEC",
   blue: "#3B82F6",
   blueL: "#EFF6FF",
-  accent: "#4C68F5",
-  accentL: "#EEF1FF",
-  fixed: "#E08000",
-  fixedL: "#FFF8EC",
+  accent: "#1D4ED8",
+  accentL: "#EEF2FF",
+  fixed: "#F59E0B",
+  fixedL: "#FFFBEB",
+  shadow: "0 8px 24px #0000000A",
 };
+
 
 // 결제 정보 프리셋
 const PAY_INSTRUMENTS = ["신용카드", "체크카드", "현금", "계좌이체", "기타"];
@@ -138,7 +141,7 @@ function LoginScreen() {
         alignItems: "center",
         justifyContent: "center",
         padding: "20px",
-        fontFamily: "'Noto Sans KR','Apple SD Gothic Neo',sans-serif",
+        fontFamily: "system-ui, -apple-system, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif",
       }}
     >
       <div style={{ width: "100%", maxWidth: 380 }}>
@@ -256,7 +259,7 @@ export default function App() {
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          fontFamily: "'Noto Sans KR',sans-serif",
+          fontFamily: "system-ui, -apple-system, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif",
           fontSize: 16,
           color: C.sub,
         }}
@@ -400,6 +403,37 @@ function BudgetApp({ user }) {
       showToast(`초기화에 실패했어요: ${e?.message || ""}`, false);
     }
   };
+
+
+const resetAllTransactions = async () => {
+  try {
+    const ok = window.confirm("전체 거래(모든 달)를 삭제할까요?\n(되돌릴 수 없어요)");
+    if (!ok) return;
+
+    const baseQ = query(collection(db, "transactions"), where("uid", "==", user.uid));
+    const snap = await getDocs(baseQ);
+
+    if (snap.empty) {
+      showToast("삭제할 거래가 없어요");
+      return;
+    }
+
+    const docs = snap.docs;
+
+    for (let i = 0; i < docs.length; i += 450) {
+      const batch = writeBatch(db);
+      docs.slice(i, i + 450).forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+    }
+
+    setTransactions((prev) => prev.filter((x) => x.uid !== user.uid));
+    showToast("전체 거래를 초기화했어요 ✓");
+  } catch (e) {
+    console.error(e);
+    showToast(`초기화에 실패했어요: ${e?.message || ""}`, false);
+  }
+};
+
 
   const resetFixedHistoryFromMonth = async (mk) => {
     try {
@@ -601,7 +635,7 @@ function BudgetApp({ user }) {
   };
 
   const handleDeleteTx = async (id) => {
-    const ok = window.confirm("이 내역을 삭제할까요?(되돌릴 수 없어요)");
+    const ok = window.confirm("이 내역을 삭제할까요?\n(되돌릴 수 없어요)");
     if (!ok) return;
     try {
       await deleteDoc(doc(db, "transactions", id));
@@ -691,7 +725,7 @@ function BudgetApp({ user }) {
 
   // ✅ 삭제도 과거 반영을 막기 위해: 과거에 적용된 항목은 '전월까지'로 종료 처리
   const handleDeleteFixed = async (item) => {
-    const ok = window.confirm("이 고정항목을 삭제(또는 과거 적용 종료)할까요? (되돌릴 수 없어요)");
+    const ok = window.confirm("이 고정항목을 삭제(또는 과거 적용 종료)할까요?\n(되돌릴 수 없어요)");
     if (!ok) return;
     try {
       const effectiveFrom = item.effectiveFrom || "0000-01";
@@ -724,7 +758,7 @@ function BudgetApp({ user }) {
       style={{
         background: C.bg,
         minHeight: "100vh",
-        fontFamily: "'Noto Sans KR','Apple SD Gothic Neo',sans-serif",
+        fontFamily: "system-ui, -apple-system, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif",
         color: C.text,
         maxWidth: 480,
         margin: "0 auto",
@@ -1079,81 +1113,6 @@ function BudgetApp({ user }) {
                         <div style={{ fontSize: 18, fontWeight: 700, color: C.income }}>+{fmt(stats.fixedInc)}원</div>
                       </div>
                     )}
-
-          {/* ✅ 관리 탭 */}
-          {tab === "manage" && (
-            <div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                <div style={{ fontSize: 14, fontWeight: 800 }}>데이터 관리</div>
-                <div style={{ fontSize: 12, color: C.sub }}>초기화 · 고정항목 적용범위</div>
-              </div>
-
-              <div style={{ background: C.card, borderRadius: 18, padding: "16px", border: `1px solid ${C.border}`, boxShadow: "0 2px 14px #00000008" }}>
-                <div style={{ fontSize: 12, color: C.sub, lineHeight: 1.55, marginBottom: 14 }}>
-                  • <b>선택 달 거래 초기화</b>: 해당 월의 거래 내역만 삭제해요.<br />
-                  • <b>고정항목 과거 적용 초기화</b>: 고정항목이 과거 전체에 적용되는 문제를 끊고, 선택 월부터만 적용되게 정리해요.
-                </div>
-
-                <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
-                  <div>
-                    <div style={{ fontSize: 12, color: C.sub, fontWeight: 800, marginBottom: 6 }}>기준 월</div>
-                    <input
-                      type="month"
-                      value={manageMonthKey}
-                      onChange={(e) => setManageMonthKey(e.target.value)}
-                      style={{
-                        width: "100%",
-                        padding: "11px 12px",
-                        borderRadius: 14,
-                        border: `1px solid ${C.border}`,
-                        background: "#fff",
-                        fontFamily: "inherit",
-                        fontSize: 13,
-                        outline: "none",
-                      }}
-                    />
-                  </div>
-
-                  <button
-                    onClick={() => resetTransactionsByMonthKey(manageMonthKey)}
-                    style={{
-                      width: "100%",
-                      padding: "12px 12px",
-                      borderRadius: 14,
-                      border: `1px solid ${C.expense}`,
-                      background: C.expenseL,
-                      color: C.expense,
-                      fontFamily: "inherit",
-                      fontSize: 13,
-                      fontWeight: 900,
-                      cursor: "pointer",
-                    }}
-                  >
-                    선택 달 거래 초기화
-                  </button>
-
-                  <button
-                    onClick={() => resetFixedHistoryFromMonth(manageMonthKey)}
-                    style={{
-                      width: "100%",
-                      padding: "12px 12px",
-                      borderRadius: 14,
-                      border: `1px solid ${C.fixed}`,
-                      background: C.fixedL,
-                      color: C.fixed,
-                      fontFamily: "inherit",
-                      fontSize: 13,
-                      fontWeight: 900,
-                      cursor: "pointer",
-                    }}
-                  >
-                    고정항목 과거 적용 초기화 (선택 월부터)
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
                     {stats.fixedExp > 0 && (
                       <div>
                         <div style={{ fontSize: 11, color: C.expense, fontWeight: 600, marginBottom: 2 }}>고정지출</div>
@@ -1258,6 +1217,127 @@ function BudgetApp({ user }) {
               </div>
             </div>
           )}
+
+{/* ✅ 관리 탭 */}
+{tab === "manage" && (
+  <div>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 14 }}>
+      <div>
+        <div style={{ fontSize: 18, fontWeight: 900, letterSpacing: "-0.4px" }}>관리</div>
+        <div style={{ fontSize: 12, color: C.sub, marginTop: 4 }}>
+          위험한 작업(삭제/초기화)은 되돌릴 수 없어요.
+        </div>
+      </div>
+      <div style={{ fontSize: 12, color: C.sub }}>기준 월: {manageMonthKey}</div>
+    </div>
+
+    {/* 기준 월 */}
+    <div style={{ background: C.card, borderRadius: 18, padding: 16, border: `1px solid ${C.border}`, boxShadow: C.shadow, marginBottom: 14 }}>
+      <div style={{ fontSize: 12, color: C.sub, fontWeight: 800, marginBottom: 8 }}>기준 월 선택</div>
+      <input
+        type="month"
+        value={manageMonthKey}
+        onChange={(e) => setManageMonthKey(e.target.value)}
+        style={{
+          width: "100%",
+          padding: "12px 12px",
+          borderRadius: 14,
+          border: `1px solid ${C.border}`,
+          background: "#fff",
+          fontFamily: "inherit",
+          fontSize: 13,
+          outline: "none",
+        }}
+      />
+      <div style={{ fontSize: 12, color: C.sub, marginTop: 10, lineHeight: 1.55 }}>
+        • 이 월을 기준으로 “거래 초기화”, “고정항목 적용범위 초기화”를 실행해요.
+      </div>
+    </div>
+
+    {/* 거래 초기화 */}
+    <div style={{ background: C.card, borderRadius: 18, padding: 16, border: `1px solid ${C.border}`, boxShadow: C.shadow, marginBottom: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+        <div style={{ fontSize: 14, fontWeight: 900 }}>거래 데이터</div>
+        <span style={{ fontSize: 12, color: C.sub }}>transactions</span>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 10 }}>
+        <button
+          onClick={() => resetTransactionsByMonthKey(manageMonthKey)}
+          style={{
+            width: "100%",
+            padding: "12px 12px",
+            borderRadius: 14,
+            border: `1px solid ${C.expense}`,
+            background: C.expenseL,
+            color: C.expense,
+            fontFamily: "inherit",
+            fontSize: 13,
+            fontWeight: 900,
+            cursor: "pointer",
+          }}
+        >
+          선택 달 거래 초기화
+        </button>
+
+        <button
+          onClick={() => resetAllTransactions()}
+          style={{
+            width: "100%",
+            padding: "12px 12px",
+            borderRadius: 14,
+            border: `1px solid ${C.text}`,
+            background: "#1118270A",
+            color: C.text,
+            fontFamily: "inherit",
+            fontSize: 13,
+            fontWeight: 900,
+            cursor: "pointer",
+          }}
+        >
+          전체 거래 초기화
+        </button>
+      </div>
+
+      <div style={{ fontSize: 12, color: C.sub, marginTop: 12, lineHeight: 1.55 }}>
+        • “선택 달 거래 초기화”는 해당 월의 거래만 삭제해요.<br />
+        • “전체 거래 초기화”는 모든 거래를 삭제해요(고정항목은 유지).
+      </div>
+    </div>
+
+    {/* 고정항목 적용범위 */}
+    <div style={{ background: C.card, borderRadius: 18, padding: 16, border: `1px solid ${C.border}`, boxShadow: C.shadow }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+        <div style={{ fontSize: 14, fontWeight: 900 }}>고정항목 적용범위</div>
+        <span style={{ fontSize: 12, color: C.sub }}>fixed_items</span>
+      </div>
+
+      <button
+        onClick={() => resetFixedHistoryFromMonth(manageMonthKey)}
+        style={{
+          width: "100%",
+          padding: "12px 12px",
+          borderRadius: 14,
+          border: `1px solid ${C.fixed}`,
+          background: C.fixedL,
+          color: "#B45309",
+          fontFamily: "inherit",
+          fontSize: 13,
+          fontWeight: 900,
+          cursor: "pointer",
+        }}
+      >
+        고정항목 과거 적용 초기화 (선택 월부터)
+      </button>
+
+      <div style={{ fontSize: 12, color: C.sub, marginTop: 12, lineHeight: 1.55 }}>
+        이 작업은 “고정항목이 과거 전체에 적용돼서 월별비교가 같이 바뀌는 현상”을 정리해요.<br />
+        • 과거 버전(히스토리)을 지우고<br />
+        • 모든 고정항목을 <b>{manageMonthKey}</b>부터만 적용되게 재설정해요.
+      </div>
+    </div>
+  </div>
+)}
         </main>
       )}
 
@@ -1825,7 +1905,7 @@ function Inp(props) {
         padding: "12px 14px",
         color: C.text,
         fontSize: 15,
-        fontFamily: "'Noto Sans KR',sans-serif",
+        fontFamily: "system-ui, -apple-system, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif",
         marginBottom: 14,
         outline: "none",
       }}
@@ -1845,7 +1925,7 @@ function Sel(props) {
         padding: "12px 14px",
         color: C.text,
         fontSize: 15,
-        fontFamily: "'Noto Sans KR',sans-serif",
+        fontFamily: "system-ui, -apple-system, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif",
         marginBottom: 14,
         outline: "none",
         appearance: "none",
@@ -1867,7 +1947,7 @@ function SBtn({ onClick, children }) {
         fontSize: 16,
         fontWeight: 700,
         cursor: "pointer",
-        fontFamily: "'Noto Sans KR',sans-serif",
+        fontFamily: "system-ui, -apple-system, 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif",
         marginTop: 4,
       }}
     >
