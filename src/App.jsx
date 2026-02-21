@@ -2151,7 +2151,17 @@ function CalendarCompare({ year, month, dailyTotals, prevDailyTotals, prevMonthI
                 <span style={{ fontSize: 12, fontWeight: 900, color: isToday(dateStr) ? C.accent : C.text }}>{d}</span>
                 {hasData && <span style={{ fontSize: 10, color: C.sub, fontWeight: 800 }}>•</span>}
               </div>
-              <div style={{ fontSize: 11, fontWeight: 800, color: expense > 0 ? C.expense : C.sub, lineHeight: 1.1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis"5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              <div
+                style={{
+                  fontSize: 11,
+                  fontWeight: 800,
+                  color: expense > 0 ? C.expense : C.sub,
+                  lineHeight: 1.1,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
                 {expense > 0 ? `-${compactKRW(expense)}` : "-"}
               </div>
               <div style={{ fontSize: 10, color: C.sub, marginTop: 3, lineHeight: 1.1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
