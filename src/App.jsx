@@ -63,7 +63,7 @@ const CAT_ICONS = {
   기타지출: "💸",
 };
 
-const C = {
+const LIGHT = {
   // Toss/Obsidian-ish: clean, airy, high contrast
   bg: "#F7F8FA",
   card: "#FFFFFF",
@@ -82,6 +82,29 @@ const C = {
   fixedL: "#FFFBEB",
   shadow: "0 8px 24px #0000000A",
 };
+
+const DARK = {
+  // Dark: Obsidian-ish
+  bg: "#0B1220",
+  card: "#0F172A",
+  border: "#243244",
+  text: "#E5E7EB",
+  sub: "#94A3B8",
+  income: "#34D399",
+  incomeL: "#052E2B",
+  expense: "#FB7185",
+  expenseL: "#3A0B17",
+  blue: "#60A5FA",
+  blueL: "#0B1D3A",
+  accent: "#93C5FD",
+  accentL: "#0B1D3A",
+  fixed: "#FBBF24",
+  fixedL: "#2A1A00",
+  shadow: "0 10px 28px #00000055",
+};
+
+// ⚠️ theme에 따라 App에서 아래 C를 LIGHT/DARK로 갈아끼웁니다.
+let C = LIGHT;
 
 
 // 결제 정보 프리셋
@@ -242,6 +265,24 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // ✅ 다크모드 토글
+  const [theme, setTheme] = useState(() => {
+    try {
+      const saved = localStorage.getItem("theme");
+      if (saved === "dark" || saved === "light") return saved;
+      const prefersDark =
+        typeof window !== "undefined" &&
+        window.matchMedia &&
+        window.matchMedia("(prefers-color-scheme: dark)").matches;
+      return prefersDark ? "dark" : "light";
+    } catch {
+      return "light";
+    }
+  });
+
+  // 렌더 직전에도 C를 맞춰줌(로딩/로그인 화면 포함)
+  C = theme === "dark" ? DARK : LIGHT;
+
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
@@ -249,6 +290,17 @@ export default function App() {
     });
     return () => unsubscribe();
   }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("theme", theme);
+    } catch {}
+    C = theme === "dark" ? DARK : LIGHT;
+    document.body.style.background = C.bg;
+    document.documentElement.style.colorScheme = theme;
+  }, [theme]);
+
+  const toggleTheme = () => setTheme((t) => (t === "dark" ? "light" : "dark"));
 
   if (loading)
     return (
@@ -268,12 +320,12 @@ export default function App() {
       </div>
     );
 
-  if (!user) return <LoginScreen />;
-  return <BudgetApp user={user} />;
+  if (!user) return <LoginScreen theme={theme} onToggleTheme={toggleTheme} />;
+  return <BudgetApp user={user} theme={theme} onToggleTheme={toggleTheme} />;
 }
 
 // ── 가계부 본체 ───────────────────────────────────────────────
-function BudgetApp({ user }) {
+function BudgetApp({ user, theme, onToggleTheme }) {
   const today = new Date();
   const [year, setYear] = useState(today.getFullYear());
   const [month, setMonth] = useState(today.getMonth());
@@ -302,13 +354,15 @@ function BudgetApp({ user }) {
     payInstrument: "신용카드",
     payMethod: "카드",
   });
-  const [fixedForm, setFixedForm] = useState({ group: "기본", name: "", amount: "", type: "expense", memo: "", payInstrument: "", payMethod: "" });
+  const [fixedForm, setFixedForm] = useState({ group: "기본", type: "expense", category: "식비", name: "", amount: "", memo: "", payInstrument: "", payMethod: "" });
 
   // 일별 탭 뷰(리스트/달력)
   const [dailyView, setDailyView] = useState("list");
   const [selectedDate, setSelectedDate] = useState(null);
   const [manageMonthKey, setManageMonthKey] = useState(monthKeyOf(new Date().getFullYear(), new Date().getMonth()));
   const [expandedFixedGroups, setExpandedFixedGroups] = useState({});
+  const [draggingFixedId, setDraggingFixedId] = useState(null);
+
 
   // ── 데이터 로드 ──────────────────────────────────────────────
   const loadData = async () => {
@@ -329,7 +383,7 @@ function BudgetApp({ user }) {
       }));
       setFixedItems(fxSnap.docs.map((d) => {
         const v = d.data();
-        return { id: d.id, ...v, group: (v?.group || "기본") };
+        return { id: d.id, ...v, group: (v?.group || "기본"), category: v?.category || (v?.type === "income" ? "기타수입" : "기타지출"), order: typeof v?.order === "number" ? v.order : 0 };
       }));
     } catch (e) {
       console.error(e);
@@ -721,6 +775,8 @@ const resetAllTransactions = async () => {
         name: fixedForm.name.trim(),
         amount: Number(fixedForm.amount),
         type: fixedForm.type,
+        category: fixedForm.category || (fixedForm.type === "income" ? "기타수입" : "기타지출"),
+        order: editFixed?.order ?? Date.now(),
         memo: fixedForm.memo || "",
         payInstrument: fixedForm.payInstrument || "",
         payMethod: fixedForm.payMethod || "",
@@ -758,7 +814,7 @@ const resetAllTransactions = async () => {
       await loadData();
       setShowFixedForm(false);
       setEditFixed(null);
-      setFixedForm({ group: "기본", name: "", amount: "", type: "expense", memo: "", payInstrument: "", payMethod: "" });
+      setFixedForm({ group: "기본", type: "expense", category: "식비", name: "", amount: "", memo: "", payInstrument: "", payMethod: "" });
       showToast(editFixed ? "수정했어요 ✓" : "저장했어요 ✓");
     } catch (e) {
       console.error(e);
@@ -783,6 +839,66 @@ const resetAllTransactions = async () => {
     } catch (e) {
       console.error(e);
       showToast("삭제에 실패했어요", false);
+    }
+  };
+
+  // ── 고정항목: 드래그 이동/정렬 + 빠른 편집 ───────────────────────
+  const updateFixedWithVersioning = async (item, patch) => {
+    const effectiveFrom = item.effectiveFrom || "0000-01";
+    const currentFrom = monthKey;
+
+    // 이번 달부터 적용되는 버전이면 그냥 update
+    if (effectiveFrom === currentFrom) {
+      await updateDoc(doc(db, "fixed_items", item.id), { ...patch });
+      setFixedItems((prev) => prev.map((f) => (f.id === item.id ? { ...f, ...patch } : f)));
+      return;
+    }
+
+    // 과거에 적용되던 항목이면: 기존은 전월까지로 닫고, 이번 달 버전 새로 생성
+    const effectiveToForOld = prevMonthKeyFrom(year, month);
+    await updateDoc(doc(db, "fixed_items", item.id), { effectiveTo: effectiveToForOld });
+
+    const payloadNew = {
+      uid: user.uid,
+      group: item.group || "기본",
+      type: item.type,
+      category: item.category || (item.type === "income" ? "기타수입" : "기타지출"),
+      name: item.name,
+      amount: Number(item.amount),
+      memo: item.memo || "",
+      payInstrument: item.payInstrument || "",
+      payMethod: item.payMethod || "",
+      order: typeof item.order === "number" ? item.order : Date.now(),
+      effectiveFrom: currentFrom,
+      effectiveTo: null,
+      ...patch,
+    };
+    await addDoc(collection(db, "fixed_items"), payloadNew);
+
+    // 로컬은 한번에 다시 로드(새 doc id 필요)
+    await loadData();
+  };
+
+  const moveFixedToGroup = async (item, newGroup) => {
+    const g = (newGroup || "기본").trim() || "기본";
+    if ((item.group || "기본") === g) return;
+    try {
+      await updateFixedWithVersioning(item, { group: g });
+      showToast(`"${g}"로 옮겼어요 ✓`);
+    } catch (e) {
+      console.error(e);
+      showToast("옮기기에 실패했어요", false);
+    }
+  };
+
+  const moveFixedOrder = async (item, newOrder, newGroup) => {
+    try {
+      const patch = { order: newOrder };
+      if (newGroup) patch.group = newGroup;
+      await updateFixedWithVersioning(item, patch);
+    } catch (e) {
+      console.error(e);
+      showToast("정렬 변경에 실패했어요", false);
     }
   };
 
@@ -860,29 +976,53 @@ const resetAllTransactions = async () => {
               ›
             </button>
           </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              onClick={onToggleTheme}
+              title={theme === "dark" ? "라이트 모드" : "다크 모드"}
+              style={{
+                background: C.card,
+                border: `1px solid ${C.border}`,
+                color: C.text,
+                height: 36,
+                borderRadius: 12,
+                padding: "0 12px",
+                fontSize: 13,
+                fontWeight: 900,
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                boxShadow: "0 1px 8px #00000014",
+              }}
+            >
+              <span style={{ fontSize: 16, lineHeight: 1 }}>{theme === "dark" ? "☀️" : "🌙"}</span>
+              <span style={{ color: C.sub, fontWeight: 900 }}>{theme === "dark" ? "Light" : "Dark"}</span>
+            </button>
 
-          <button
-            onClick={handleLogout}
-            title="로그아웃"
-            style={{
-              background: "#fff",
-              border: `1px solid ${C.border}`,
-              color: C.text,
-              height: 36,
-              borderRadius: 12,
-              padding: "0 12px",
-              fontSize: 13,
-              fontWeight: 800,
-              cursor: "pointer",
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              boxShadow: "0 1px 8px #00000008",
-            }}
-          >
-            <span style={{ fontSize: 16, lineHeight: 1 }}>🏠</span>
-            <span style={{ color: C.sub, fontWeight: 800 }}>로그아웃</span>
-          </button>
+            <button
+              onClick={handleLogout}
+              title="로그아웃"
+              style={{
+                background: C.card,
+                border: `1px solid ${C.border}`,
+                color: C.text,
+                height: 36,
+                borderRadius: 12,
+                padding: "0 12px",
+                fontSize: 13,
+                fontWeight: 800,
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                boxShadow: "0 1px 8px #00000014",
+              }}
+            >
+              <span style={{ fontSize: 16, lineHeight: 1 }}>🏠</span>
+              <span style={{ color: C.sub, fontWeight: 800 }}>로그아웃</span>
+            </button>
+          </div>
 </div>
 
         <div style={{ display: "flex" }}>
@@ -1179,7 +1319,7 @@ const resetAllTransactions = async () => {
                 <button
                   onClick={() => {
                     setEditFixed(null);
-                    setFixedForm({ group: "기본", name: "", amount: "", type: "expense", memo: "", payInstrument: "", payMethod: "" });
+                    setFixedForm({ group: "기본", type: "expense", category: "식비", name: "", amount: "", memo: "", payInstrument: "", payMethod: "" });
                     setShowFixedForm(true);
                   }}
                   style={{
@@ -1206,6 +1346,19 @@ const resetAllTransactions = async () => {
                   return (
                     <div
                       key={group}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        if (!draggingFixedId) return;
+                        const dragged = activeFixedItems.find((x) => x.id === draggingFixedId);
+                        if (!dragged) return;
+                        // 그룹 위에 드롭하면: 해당 그룹으로 이동 + 맨 아래로
+                        const maxOrder = Math.max(0, ...items.map((x) => Number(x.order) || 0));
+                        moveFixedOrder(dragged, maxOrder + 1, group);
+                        setDraggingFixedId(null);
+                      }}
                       style={{
                         background: C.card,
                         borderRadius: 16,
@@ -1248,6 +1401,25 @@ const resetAllTransactions = async () => {
                             {items.map((f) => (
                               <div
                                 key={f.id}
+                                draggable
+                                onDragStart={(e) => {
+                                  setDraggingFixedId(f.id);
+                                  e.dataTransfer.effectAllowed = "move";
+                                }}
+                                onDragEnd={() => setDraggingFixedId(null)}
+                                onDragOver={(e) => {
+                                  e.preventDefault();
+                                }}
+                                onDrop={(e) => {
+                                  e.preventDefault();
+                                  if (!draggingFixedId || draggingFixedId === f.id) return;
+                                  const dragged = activeFixedItems.find((x) => x.id === draggingFixedId);
+                                  if (!dragged) return;
+                                  // 이 아이템 위에 드롭하면: 같은 그룹이면 '앞으로', 다른 그룹이면 '앞으로 + 그룹 변경'
+                                  const targetOrder = Number(f.order) || 0;
+                                  moveFixedOrder(dragged, targetOrder - 0.01, group);
+                                  setDraggingFixedId(null);
+                                }}
                                 style={{
                                   background: C.bg,
                                   borderRadius: 14,
@@ -1276,7 +1448,7 @@ const resetAllTransactions = async () => {
                                 <div style={{ flex: 1, minWidth: 0 }}>
                                   <div style={{ fontSize: 14, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</div>
                                   <div style={{ fontSize: 11, color: C.sub }}>
-                                    {f.type === "income" ? "고정수입" : "고정지출"}
+                                    {f.type === "income" ? "고정수입" : "고정지출"}{f.category ? ` · ${f.category}` : ""}
                                     {(f.payInstrument || f.payMethod || f.memo) && (
                                       <span style={{ marginLeft: 6 }}>
                                         • {[(f.payInstrument || "").trim(), (f.payMethod || "").trim()].filter(Boolean).join(" / ")}
@@ -1295,9 +1467,10 @@ const resetAllTransactions = async () => {
                                       setEditFixed(f);
                                       setFixedForm({
                                         group: f.group || "기본",
+                                        type: f.type,
+                                        category: f.category || (f.type === "income" ? "기타수입" : "기타지출"),
                                         name: f.name,
                                         amount: String(f.amount),
-                                        type: f.type,
                                         memo: f.memo || "",
                                         payInstrument: f.payInstrument || "",
                                         payMethod: f.payMethod || "",
@@ -1673,7 +1846,7 @@ const resetAllTransactions = async () => {
             {["expense", "income"].map((t) => (
               <button
                 key={t}
-                onClick={() => setFixedForm((f) => ({ ...f, type: t }))}
+                onClick={() => setFixedForm((f) => ({ ...f, type: t, category: (CATEGORIES[t] || [f.category])[0] }))}
                 style={{
                   flex: 1,
                   padding: "10px 0",
@@ -1706,6 +1879,19 @@ const resetAllTransactions = async () => {
               <option key={g} value={g} />
             ))}
           </datalist>
+
+          <Lbl>카테고리</Lbl>
+          <Sel
+            value={fixedForm.category}
+            onChange={(e) => setFixedForm((f) => ({ ...f, category: e.target.value }))}
+          >
+            {(CATEGORIES[fixedForm.type] || []).map((c) => (
+              <option key={c} value={c}>
+                {CAT_ICONS[c]} {c}
+              </option>
+            ))}
+          </Sel>
+
           <Lbl>항목명</Lbl>
           <Inp
             type="text"
@@ -1900,6 +2086,15 @@ function CalendarCompare({ year, month, dailyTotals, prevDailyTotals, prevMonthI
 
   const isToday = (dateStr) => dateStr === todayStr();
 
+  const compactKRW = (n) => {
+    const v = Math.abs(Math.round(n || 0));
+    if (v === 0) return "-";
+    if (v >= 100000000) return `${Math.round(v / 10000000) / 10}억`;
+    if (v >= 10000) return `${Math.round(v / 1000) / 10}만`;
+    if (v >= 1000) return `${Math.round(v / 100) / 10}천`;
+    return fmt(v);
+  };
+
   return (
     <div style={{ background: C.card, borderRadius: 16, padding: "14px 14px 12px", border: `1px solid ${C.border}`, boxShadow: "0 1px 4px #00000006" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
@@ -1956,11 +2151,11 @@ function CalendarCompare({ year, month, dailyTotals, prevDailyTotals, prevMonthI
                 <span style={{ fontSize: 12, fontWeight: 900, color: isToday(dateStr) ? C.accent : C.text }}>{d}</span>
                 {hasData && <span style={{ fontSize: 10, color: C.sub, fontWeight: 800 }}>•</span>}
               </div>
-              <div style={{ fontSize: 11, fontWeight: 800, color: expense > 0 ? C.expense : C.sub, lineHeight: 1.15 }}>
-                {expense > 0 ? `-${fmt(expense)}` : "-"}
+              <div style={{ fontSize: 11, fontWeight: 800, color: expense > 0 ? C.expense : C.sub, lineHeight: 1.1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis"5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {expense > 0 ? `-${compactKRW(expense)}` : "-"}
               </div>
-              <div style={{ fontSize: 10, color: C.sub, marginTop: 3, lineHeight: 1.1 }}>
-                {prevExpense > 0 ? `지난달 -${fmt(prevExpense)}` : ""}
+              <div style={{ fontSize: 10, color: C.sub, marginTop: 3, lineHeight: 1.1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                {prevExpense > 0 ? `지난달 -${compactKRW(prevExpense)}` : ""}
               </div>
             </button>
           );
