@@ -296,17 +296,19 @@ function BudgetApp({ user }) {
     date: todayStr(),
     type: "expense",
     category: "식비",
+    name: "",
     amount: "",
     memo: "",
     payInstrument: "신용카드",
     payMethod: "카드",
   });
-  const [fixedForm, setFixedForm] = useState({ name: "", amount: "", type: "expense", memo: "", payInstrument: "", payMethod: "" });
+  const [fixedForm, setFixedForm] = useState({ group: "기본", name: "", amount: "", type: "expense", memo: "", payInstrument: "", payMethod: "" });
 
   // 일별 탭 뷰(리스트/달력)
   const [dailyView, setDailyView] = useState("list");
   const [selectedDate, setSelectedDate] = useState(null);
   const [manageMonthKey, setManageMonthKey] = useState(monthKeyOf(new Date().getFullYear(), new Date().getMonth()));
+  const [expandedFixedGroups, setExpandedFixedGroups] = useState({});
 
   // ── 데이터 로드 ──────────────────────────────────────────────
   const loadData = async () => {
@@ -321,8 +323,14 @@ function BudgetApp({ user }) {
 
       const [txSnap, fxSnap] = await Promise.all([getDocs(txQuery), getDocs(fxQuery)]);
 
-      setTransactions(txSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      setFixedItems(fxSnap.docs.map((d) => ({ id: d.id, ...d.data() })));
+      setTransactions(txSnap.docs.map((d) => {
+        const v = d.data();
+        return { id: d.id, ...v, name: v?.name || "" };
+      }));
+      setFixedItems(fxSnap.docs.map((d) => {
+        const v = d.data();
+        return { id: d.id, ...v, group: (v?.group || "기본") };
+      }));
     } catch (e) {
       console.error(e);
       showToast("데이터를 불러오지 못했어요", false);
@@ -492,6 +500,37 @@ const resetAllTransactions = async () => {
 
   const activeFixedItems = useMemo(() => fixedItems.filter((f) => isFixedActiveFor(f, monthKey)), [fixedItems, monthKey]);
 
+  const groupedFixed = useMemo(() => {
+    const map = {};
+    activeFixedItems.forEach((f) => {
+      const g = (f.group || "기본").trim() || "기본";
+      if (!map[g]) map[g] = [];
+      map[g].push({ ...f, group: g });
+    });
+    return Object.entries(map)
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([group, items]) => ({
+        group,
+        items: items.sort((a, b) => (b.type === "income" ? 1 : 0) - (a.type === "income" ? 1 : 0) || b.amount - a.amount),
+        income: items.filter((x) => x.type === "income").reduce((s, x) => s + Number(x.amount), 0),
+        expense: items.filter((x) => x.type === "expense").reduce((s, x) => s + Number(x.amount), 0),
+      }));
+  }, [activeFixedItems]);
+
+  useEffect(() => {
+    setExpandedFixedGroups((prev) => {
+      const next = { ...prev };
+      groupedFixed.forEach(({ group }) => {
+        if (next[group] === undefined) next[group] = true; // 신규 폴더는 기본 펼침
+      });
+      // 폴더가 삭제되면 상태 정리
+      Object.keys(next).forEach((k) => {
+        if (!groupedFixed.find((g) => g.group === k)) delete next[k];
+      });
+      return next;
+    });
+  }, [groupedFixed]);
+
   const stats = useMemo(() => {
     const txIncome = monthTx.filter((t) => t.type === "income").reduce((a, t) => a + Number(t.amount), 0);
     const txExpense = monthTx.filter((t) => t.type === "expense").reduce((a, t) => a + Number(t.amount), 0);
@@ -605,6 +644,7 @@ const resetAllTransactions = async () => {
         date: form.date,
         type: form.type,
         category: form.category,
+        name: (form.name || "").trim(),
         amount: Number(form.amount),
         memo: form.memo || "",
         payInstrument: form.payInstrument || "",
@@ -619,10 +659,11 @@ const resetAllTransactions = async () => {
       setShowForm(false);
       setEditItem(null);
       setForm({
-        date: todayStr(),
-        type: "expense",
-        category: "식비",
-        amount: "",
+              date: todayStr(),
+              type: "expense",
+              category: "식비",
+              name: "",
+              amount: "",
         memo: "",
         payInstrument: "신용카드",
         payMethod: "카드",
@@ -653,6 +694,7 @@ const resetAllTransactions = async () => {
       date: item.date,
       type: item.type,
       category: item.category,
+      name: item.name || "",
       amount: String(item.amount),
       memo: item.memo || "",
       payInstrument: item.payInstrument || "신용카드",
@@ -675,6 +717,7 @@ const resetAllTransactions = async () => {
     try {
       const payloadBase = {
         uid: user.uid,
+        group: (fixedForm.group || "기본").trim() || "기본",
         name: fixedForm.name.trim(),
         amount: Number(fixedForm.amount),
         type: fixedForm.type,
@@ -715,7 +758,7 @@ const resetAllTransactions = async () => {
       await loadData();
       setShowFixedForm(false);
       setEditFixed(null);
-      setFixedForm({ name: "", amount: "", type: "expense", memo: "", payInstrument: "", payMethod: "" });
+      setFixedForm({ group: "기본", name: "", amount: "", type: "expense", memo: "", payInstrument: "", payMethod: "" });
       showToast(editFixed ? "수정했어요 ✓" : "저장했어요 ✓");
     } catch (e) {
       console.error(e);
@@ -1064,6 +1107,7 @@ const resetAllTransactions = async () => {
                               date: selectedDate,
                               type: "expense",
                               category: "식비",
+                              name: "",
                               amount: "",
                               memo: "",
                               payInstrument: f.payInstrument || "신용카드",
@@ -1135,7 +1179,7 @@ const resetAllTransactions = async () => {
                 <button
                   onClick={() => {
                     setEditFixed(null);
-                    setFixedForm({ name: "", amount: "", type: "expense", memo: "", payInstrument: "", payMethod: "" });
+                    setFixedForm({ group: "기본", name: "", amount: "", type: "expense", memo: "", payInstrument: "", payMethod: "" });
                     setShowFixedForm(true);
                   }}
                   style={{
@@ -1155,65 +1199,123 @@ const resetAllTransactions = async () => {
               </div>
 
               {activeFixedItems.length === 0 && <Empty text="고정 항목이 없어요" emoji="📌" />}
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {activeFixedItems.map((f) => (
-                  <div
-                    key={f.id}
-                    style={{
-                      background: C.card,
-                      borderRadius: 14,
-                      padding: "14px 16px",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 12,
-                      border: `1px solid ${C.border}`,
-                      boxShadow: "0 1px 3px #00000005",
-                    }}
-                  >
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {groupedFixed.map(({ group, items, income, expense }) => {
+                  const open = expandedFixedGroups[group] !== false;
+                  const net = income - expense;
+                  return (
                     <div
+                      key={group}
                       style={{
-                        width: 38,
-                        height: 38,
-                        borderRadius: 10,
-                        background: f.type === "income" ? C.incomeL : C.expenseL,
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        fontSize: 20,
-                        flexShrink: 0,
+                        background: C.card,
+                        borderRadius: 16,
+                        border: `1px solid ${C.border}`,
+                        boxShadow: "0 1px 3px #00000005",
+                        overflow: "hidden",
                       }}
                     >
-                      {f.type === "income" ? "💵" : "💸"}
-                    </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 14, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</div>
-                      <div style={{ fontSize: 11, color: C.sub }}>
-                        {f.type === "income" ? "고정수입" : "고정지출"}
-                        {(f.payInstrument || f.payMethod || f.memo) && (
-                          <span style={{ marginLeft: 6 }}>
-                            • {[(f.payInstrument || "").trim(), (f.payMethod || "").trim()].filter(Boolean).join(" / ")}
-                            {f.memo ? ` • ${f.memo}` : ""}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: f.type === "income" ? C.income : C.expense, whiteSpace: "nowrap" }}>
-                      {f.type === "income" ? "+" : "-"}
-                      {fmt(f.amount)}원
-                    </div>
-                    <div style={{ display: "flex", gap: 2 }}>
-                      <IBtn
-                        onClick={() => {
-                          setEditFixed(f);
-                          setFixedForm({ name: f.name, amount: String(f.amount), type: f.type, memo: f.memo || "", payInstrument: f.payInstrument || "", payMethod: f.payMethod || "" });
-                          setShowFixedForm(true);
+                      <button
+                        onClick={() => setExpandedFixedGroups((p) => ({ ...p, [group]: !(p[group] !== false) }))}
+                        style={{
+                          width: "100%",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 10,
+                          padding: "12px 14px",
+                          background: "#fff",
+                          border: "none",
+                          cursor: "pointer",
+                          fontFamily: "inherit",
+                          textAlign: "left",
                         }}
-                        e="✏️"
-                      />
-                      <IBtn onClick={() => handleDeleteFixed(f)} e="🗑️" />
+                      >
+                        <div style={{ fontSize: 18, flexShrink: 0 }}>📁</div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 900, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{group}</div>
+                          <div style={{ fontSize: 11, color: C.sub, marginTop: 2 }}>
+                            {items.length}개 ·{" "}
+                            <span style={{ color: C.income }}>+{fmt(income)}</span> ·{" "}
+                            <span style={{ color: C.expense }}>-{fmt(expense)}</span> ·{" "}
+                            <span style={{ color: net >= 0 ? C.blue : C.expense }}>{net >= 0 ? "+" : "-"}{fmt(Math.abs(net))}</span>
+                          </div>
+                        </div>
+                        <div style={{ fontSize: 18, color: C.sub, flexShrink: 0 }}>{open ? "▾" : "▸"}</div>
+                      </button>
+
+                      {open && (
+                        <div style={{ padding: "0 12px 12px" }}>
+                          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                            {items.map((f) => (
+                              <div
+                                key={f.id}
+                                style={{
+                                  background: C.bg,
+                                  borderRadius: 14,
+                                  padding: "12px 12px",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 12,
+                                  border: `1px solid ${C.border}`,
+                                }}
+                              >
+                                <div
+                                  style={{
+                                    width: 38,
+                                    height: 38,
+                                    borderRadius: 10,
+                                    background: f.type === "income" ? C.incomeL : C.expenseL,
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                    fontSize: 20,
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  {f.type === "income" ? "💵" : "💸"}
+                                </div>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ fontSize: 14, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</div>
+                                  <div style={{ fontSize: 11, color: C.sub }}>
+                                    {f.type === "income" ? "고정수입" : "고정지출"}
+                                    {(f.payInstrument || f.payMethod || f.memo) && (
+                                      <span style={{ marginLeft: 6 }}>
+                                        • {[(f.payInstrument || "").trim(), (f.payMethod || "").trim()].filter(Boolean).join(" / ")}
+                                        {f.memo ? ` • ${f.memo}` : ""}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                                <div style={{ fontSize: 15, fontWeight: 800, color: f.type === "income" ? C.income : C.expense, whiteSpace: "nowrap" }}>
+                                  {f.type === "income" ? "+" : "-"}
+                                  {fmt(f.amount)}원
+                                </div>
+                                <div style={{ display: "flex", gap: 2 }}>
+                                  <IBtn
+                                    onClick={() => {
+                                      setEditFixed(f);
+                                      setFixedForm({
+                                        group: f.group || "기본",
+                                        name: f.name,
+                                        amount: String(f.amount),
+                                        type: f.type,
+                                        memo: f.memo || "",
+                                        payInstrument: f.payInstrument || "",
+                                        payMethod: f.payMethod || "",
+                                      });
+                                      setShowFixedForm(true);
+                                    }}
+                                    e="✏️"
+                                  />
+                                  <IBtn onClick={() => handleDeleteFixed(f)} e="🗑️" />
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           )}
@@ -1349,6 +1451,7 @@ const resetAllTransactions = async () => {
               date: todayStr(),
               type: "expense",
               category: "식비",
+              name: "",
               amount: "",
               memo: "",
               payInstrument: "신용카드",
@@ -1503,6 +1606,13 @@ const resetAllTransactions = async () => {
               </button>
             ))}
           </div>
+          <Lbl>이름</Lbl>
+          <Inp
+            type="text"
+            value={form.name}
+            onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+            placeholder="예) 스타벅스, 점심, 택시, 아이폰 할부..."
+          />
           <Lbl>금액 (원)</Lbl>
           <Inp
             type="number"
@@ -1583,6 +1693,19 @@ const resetAllTransactions = async () => {
               </button>
             ))}
           </div>
+          <Lbl>폴더</Lbl>
+          <Inp
+            type="text"
+            list="fixedGroupList"
+            value={fixedForm.group}
+            onChange={(e) => setFixedForm((f) => ({ ...f, group: e.target.value }))}
+            placeholder="예) 구독, 주거, 보험, 대출..."
+          />
+          <datalist id="fixedGroupList">
+            {[...new Set(fixedItems.map((x) => x.group || "기본"))].sort((a,b)=>a.localeCompare(b)).map((g) => (
+              <option key={g} value={g} />
+            ))}
+          </datalist>
           <Lbl>항목명</Lbl>
           <Inp
             type="text"
@@ -1736,7 +1859,12 @@ function DayList({ date, items, openEdit, onDelete }) {
             {CAT_ICONS[t.category] || "💳"}
           </div>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 13, fontWeight: 600 }}>{t.category}</div>
+            <div style={{ fontSize: 13, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.name || t.category}</div>
+            {t.name && (
+              <div style={{ fontSize: 11, color: C.sub, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {CAT_ICONS[t.category] || "🏷️"} {t.category}
+              </div>
+            )}
             {t.memo && <div style={{ fontSize: 11, color: C.sub, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.memo}</div>}
             {(t.payInstrument || t.payMethod) && (
               <div style={{ fontSize: 11, color: C.sub, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -1779,7 +1907,7 @@ function CalendarCompare({ year, month, dailyTotals, prevDailyTotals, prevMonthI
         <div style={{ fontSize: 11, color: C.sub }}>표시: 지출</div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6, marginBottom: 8 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 6, marginBottom: 8 }}>
         {DAYS.map((d, i) => (
           <div key={d} style={{ fontSize: 11, color: i === 0 ? C.expense : i === 6 ? C.blue : C.sub, fontWeight: 800, textAlign: "center" }}>
             {d}
@@ -1787,7 +1915,7 @@ function CalendarCompare({ year, month, dailyTotals, prevDailyTotals, prevMonthI
         ))}
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 6 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, minmax(0, 1fr))", gap: 6 }}>
         {cells.map((d, idx) => {
           if (!d) return <div key={`e-${idx}`} />;
           const dd = String(d).padStart(2, "0");
@@ -1815,6 +1943,8 @@ function CalendarCompare({ year, month, dailyTotals, prevDailyTotals, prevMonthI
                 borderRadius: 12,
                 padding: "10px 8px",
                 cursor: "pointer",
+                minWidth: 0,
+                overflow: "hidden",
                 fontFamily: "inherit",
                 textAlign: "left",
                 minHeight: 64,
